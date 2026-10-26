@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+**/TestResults/
+data/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+.vs/
+.artifacts/
+.reviews/
+**/node_modules/
+web/dist/
+web/coverage/

@@ -1,0 +1,147 @@
+@baseUrl = http://127.0.0.1:5000
+@depositKey = 8b9e95ed-03a3-412c-936b-8ca9d09438d2
+@withdrawalKey = 7cd82c2b-7523-4160-9151-5629db2a097d
+@transferKey = 7b28107e-36fd-4143-b89c-8d043b441e9f
+# Run the successful operations in order. Change keys for new submissions, keep them for retries.
+
+### Accounts: 200, two accounts sorted by ID
+GET {{baseUrl}}/api/accounts
+
+### Deposit $25.00 into Checking: 201 (initial balance becomes 2500)
+# @name deposit
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{depositKey}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":2500}
+
+### Original receipt: 200 (run the named deposit request first)
+GET {{baseUrl}}{{deposit.response.headers.Location}}
+
+### Exact replay: 201, identical receipt and Location, no extra deposit
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{depositKey}}
+
+{"type":"deposit","sourceAccountId":null,"destinationAccountId":1,"amountMinor":2500}
+
+### Changed payload with same key: 409 idempotency_conflict
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{depositKey}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":2501}
+
+### Withdraw $5.00: 201 (Checking becomes 2000 on a fresh database)
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{withdrawalKey}}
+
+{"type":"withdrawal","sourceAccountId":1,"amountMinor":500}
+
+### Transfer $10.00 from Checking to Savings: 201 (1000 in each account)
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{transferKey}}
+
+{"type":"transfer","sourceAccountId":1,"destinationAccountId":2,"amountMinor":1000}
+
+### Checking history: 200, all three operations; newest first
+GET {{baseUrl}}/api/accounts/1/transactions?page=1&pageSize=2
+
+### Next page: 200
+GET {{baseUrl}}/api/accounts/1/transactions?page=2&pageSize=2
+
+### Savings history: 200, the same transfer receipt
+GET {{baseUrl}}/api/accounts/2/transactions
+
+### Invalid amount: 400 validation_error with errors.amountMinor
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":0}
+
+### Fractional cents: 400 validation_error
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":1.5}
+
+### Same-account transfer: 400 validation_error
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"transfer","sourceAccountId":1,"destinationAccountId":1,"amountMinor":100}
+
+### Unknown property: 400 validation_error
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100,"unexpected":true}
+
+### Malformed JSON: 400 validation_error
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":
+
+### Missing key: 400 validation_error
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### Invalid key: 400 validation_error
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: not-a-uuid
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### Invalid pagination: 400 validation_error
+GET {{baseUrl}}/api/accounts/1/transactions?pageSize=101
+
+### Malformed transaction ID: 400 validation_error
+GET {{baseUrl}}/api/transactions/not-a-uuid
+
+### Missing account: 404 account_not_found
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":3,"amountMinor":100}
+
+### History for a missing account: 404 account_not_found
+GET {{baseUrl}}/api/accounts/3/transactions
+
+### Missing transaction: 404 transaction_not_found
+GET {{baseUrl}}/api/transactions/eea9c909-6504-48e2-922c-9b64abae7214
+
+### Insufficient funds: 409 insufficient_funds after the sample sequence
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"withdrawal","sourceAccountId":1,"amountMinor":1000000000}
+
+### Balance limit: 409 balance_limit_exceeded after the sample sequence
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":1000000000}
+
+### Non-JSON content: 415 unsupported_media_type
+POST {{baseUrl}}/api/transactions
+Content-Type: text/plain
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+# Database failures (500/503), forced rollback, concurrency, and restart are exercised
+# by the integration suite. There are intentionally no failure-injection endpoints.

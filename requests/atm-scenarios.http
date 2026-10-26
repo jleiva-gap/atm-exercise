@@ -1,0 +1,347 @@
+# VS Code REST Client. See requests/README.md for setup and fault preparation.
+# Run 01-44 in order on a NEW disposable database with no other writers.
+# Money is integer cents; Checking=1, Savings=2. F1-F9 are optional/manual.
+@baseUrl = http://127.0.0.1:5055
+@depositKey = a8af328b-a871-4092-8d91-4caf7bdd2e01
+@withdrawalKey = a8af328b-a871-4092-8d91-4caf7bdd2e02
+@transferKey = a8af328b-a871-4092-8d91-4caf7bdd2e03
+@failureKey = a8af328b-a871-4092-8d91-4caf7bdd2e04
+@busyKey = a8af328b-a871-4092-8d91-4caf7bdd2e05
+
+### 01 Accounts - 200
+# Expect IDs 1 and 2, USD, both balanceMinor=0. Otherwise use a fresh database.
+GET {{baseUrl}}/api/accounts
+
+### 02 Deposit $100 into Checking - 201
+# Expect amountMinor=10000, destinationBalanceAfterMinor=10000 and Location.
+# @name scenarioDeposit
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{depositKey}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":10000}
+
+### 03 Fetch deposit receipt - 200
+# Run 02 first. Body must match the complete original receipt.
+GET {{baseUrl}}{{scenarioDeposit.response.headers.Location}}
+
+### 04 Replay deposit with explicit null source - 201
+# Same receipt ID, timestamp, snapshots and Location as 02; no second deposit.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{depositKey}}
+
+{"type":"deposit","sourceAccountId":null,"destinationAccountId":1,"amountMinor":10000}
+
+### 05 Withdraw $20 from Checking - 201
+# Expect sourceBalanceAfterMinor=8000; destination fields are null.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{withdrawalKey}}
+
+{"type":"withdrawal","sourceAccountId":1,"amountMinor":2000}
+
+### 06 Transfer $30 from Checking to Savings - 201
+# Expect sourceBalanceAfterMinor=5000, destinationBalanceAfterMinor=3000.
+# @name scenarioTransfer
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{transferKey}}
+
+{"type":"transfer","sourceAccountId":1,"destinationAccountId":2,"amountMinor":3000}
+
+### 07 Current balances - 200
+# Expect Checking=5000, Savings=3000; combined=8000 cents.
+GET {{baseUrl}}/api/accounts
+
+### 08 Checking history first page - 200
+# Expect page=1, pageSize=2, hasMore=true; transfer then withdrawal.
+# Transfer ID must match 06 and the Savings entry in 10.
+GET {{baseUrl}}/api/accounts/1/transactions?page=1&pageSize=2
+
+### 09 Checking history second page - 200
+# Expect only the original deposit; hasMore=false.
+GET {{baseUrl}}/api/accounts/1/transactions?page=2&pageSize=2
+
+### 10 Savings history - 200
+# Expect one entry: the same transfer receipt as 06 (not another transaction).
+GET {{baseUrl}}/api/accounts/2/transactions
+
+### 11 Original deposit snapshot after later writes - 200
+# Expect destinationBalanceAfterMinor=10000, although current balance is 5000.
+GET {{baseUrl}}{{scenarioDeposit.response.headers.Location}}
+
+### 12 Changed payload with a successful key - 409 idempotency_conflict
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{depositKey}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":10001}
+
+### 13 Zero amount - 400 validation_error
+# Expect errors.amountMinor.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":0}
+
+### 14 Negative amount - 400 validation_error
+# Expect errors.amountMinor.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":-1}
+
+### 15 Amount above maximum - 400 validation_error
+# Expect errors.amountMinor.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":1000000001}
+
+### 16 Fractional cents - 400 validation_error
+# Expect errors.body: amountMinor must be an integer.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":1.5}
+
+### 17 Numeric string - 400 validation_error
+# Expect errors.body.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":"100"}
+
+### 18 Deposit without a destination - 400 validation_error
+# Expect errors.destinationAccountId.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","amountMinor":100}
+
+### 19 Deposit with an unwanted source - 400 validation_error
+# Expect errors.sourceAccountId.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","sourceAccountId":1,"destinationAccountId":2,"amountMinor":100}
+
+### 20 Withdrawal with an unwanted destination - 400 validation_error
+# Expect errors.destinationAccountId.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"withdrawal","sourceAccountId":1,"destinationAccountId":2,"amountMinor":100}
+
+### 21 Same-account transfer - 400 validation_error
+# Expect errors.destinationAccountId.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"transfer","sourceAccountId":1,"destinationAccountId":1,"amountMinor":100}
+
+### 22 Unsupported transaction type - 400 validation_error
+# Expect errors.type; type names are case sensitive.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"Deposit","destinationAccountId":1,"amountMinor":100}
+
+### 23 Unknown JSON property - 400 validation_error
+# Expect errors.body.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100,"unexpected":true}
+
+### 24 Duplicate JSON property - 400 validation_error
+# Expect errors.body.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100,"amountMinor":200}
+
+### 25 Malformed JSON - 400 validation_error
+# Expect errors.body.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":
+
+### 26 Missing idempotency key - 400 validation_error
+# Expect errors["Idempotency-Key"].
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### 27 Invalid idempotency key - 400 validation_error
+# Expect errors["Idempotency-Key"].
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: not-a-uuid
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### 28 Multiple idempotency keys - 400 validation_error
+# Expect errors["Idempotency-Key"].
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{depositKey}}, {{transferKey}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### 29 Invalid account ID - 400 validation_error
+# Expect errors.id.
+GET {{baseUrl}}/api/accounts/0/transactions
+
+### 30 Invalid receipt UUID - 400 validation_error
+# Expect errors.id.
+GET {{baseUrl}}/api/transactions/not-a-uuid
+
+### 31 Invalid page - 400 validation_error
+# Expect errors.page.
+GET {{baseUrl}}/api/accounts/1/transactions?page=0
+
+### 32 Duplicate page parameter - 400 validation_error
+# Expect errors.page.
+GET {{baseUrl}}/api/accounts/1/transactions?page=1&page=2
+
+### 33 Page size above maximum - 400 validation_error
+# Expect errors.pageSize.
+GET {{baseUrl}}/api/accounts/1/transactions?pageSize=101
+
+### 34 Deposit into a nonexistent account - 404 account_not_found
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":3,"amountMinor":100}
+
+### 35 History of a nonexistent account - 404 account_not_found
+GET {{baseUrl}}/api/accounts/3/transactions
+
+### 36 Nonexistent receipt - 404 transaction_not_found
+GET {{baseUrl}}/api/transactions/7343c95a-080e-4a51-9337-68b63e49f193
+
+### 37 Withdrawal above available funds - 409 insufficient_funds
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"withdrawal","sourceAccountId":1,"amountMinor":5001}
+
+### 38 Deposit exceeds account balance cap - 409 balance_limit_exceeded
+# The amount is valid, but adding it to the existing 5000 cents exceeds the cap.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":1000000000}
+
+### 39 Non-JSON content - 415 unsupported_media_type
+POST {{baseUrl}}/api/transactions
+Content-Type: text/plain
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### 40 Unsupported JSON charset - 415 unsupported_media_type
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json; charset=not-a-real-encoding
+Idempotency-Key: {{$guid}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### 41 Unknown route - 404 http_error
+GET {{baseUrl}}/api/not-a-route
+
+### 42 Unsupported HTTP method - 405 http_error
+DELETE {{baseUrl}}/api/transactions
+
+### 43 Rejections did not change balances - 200
+# Still Checking=5000, Savings=3000.
+GET {{baseUrl}}/api/accounts
+
+### 44 Rejections did not create history - 200
+# Still three Checking entries, hasMore=false. Savings still has one (request 10).
+GET {{baseUrl}}/api/accounts/1/transactions?page=1&pageSize=100
+
+### F1 Receipt insert exception - 500 internal_error
+# OPTIONAL: create the trigger from requests/README.md first, after 01-44.
+# Expect safe Problem Details with traceId; no SQL/trigger message/stack trace.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{failureKey}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### F2 Failed write rolled back - 200
+# Expect Checking=5000, Savings=3000; histories unchanged (08-10).
+GET {{baseUrl}}/api/accounts
+
+### F3 Retry after removing the trigger - 201
+# OPTIONAL: DROP TRIGGER as documented first. Same key and body as F1.
+# Expect destinationBalanceAfterMinor=5100. A failed attempt did not reserve the key.
+# @name recoveredFailure
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{failureKey}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### F4 Replay recovered write - 201
+# Exact same receipt and Location as F3; no extra deposit.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{failureKey}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### F5 Database writer lock timeout - 503 database_busy
+# OPTIONAL: hold BEGIN IMMEDIATE in SQLite as documented, after F4.
+# Expect Retry-After: 1 after about five seconds; then release with ROLLBACK.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{busyKey}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### F6 Busy write did not change balances - 200
+# Release the SQLite lock first. Expect Checking=5100, Savings=3000.
+GET {{baseUrl}}/api/accounts
+
+### F7 Retry after releasing the writer lock - 201
+# Same key and body as F5. Expect destinationBalanceAfterMinor=5200.
+# @name recoveredBusy
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{busyKey}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### F8 Replay recovered busy write - 201
+# Exact same receipt and Location as F7; no extra deposit.
+POST {{baseUrl}}/api/transactions
+Content-Type: application/json
+Idempotency-Key: {{busyKey}}
+
+{"type":"deposit","destinationAccountId":1,"amountMinor":100}
+
+### F9 Final balances after both exception recoveries - 200
+# Expect Checking=5200, Savings=3000. History: Checking=5 entries, Savings=1.
+GET {{baseUrl}}/api/accounts
